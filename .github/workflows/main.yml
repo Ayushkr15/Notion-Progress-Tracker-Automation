@@ -1,5 +1,3 @@
-# .github/workflows/run_notion_sync.yml
-
 name: Hourly Notion Task Sync
 
 on:
