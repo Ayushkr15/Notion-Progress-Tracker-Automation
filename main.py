@@ -23,9 +23,9 @@ MONTHLY_DB_TITLE_PROP = "Month"
 # --- Secrets & Initialization ---
 # These are loaded from your .env file locally or from GitHub Secrets when automated
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
-WEEKLY_DB_ID = os.getenv("NOTION_WEEKLY_DB_ID")
-MONTHLY_DB_ID = os.getenv("NOTION_MONTHLY_DB_ID")
+TASKS_DB_ID = os.getenv("TASKS_DB_ID")
+WEEKLY_DB_ID = os.getenv("WEEKLY_DB_ID")
+MONTHLY_DB_ID = os.getenv("MONTHLY_DB_ID")
 
 # Verify that all necessary secrets have been loaded
 if not all([NOTION_API_KEY, TASKS_DB_ID, WEEKLY_DB_ID, MONTHLY_DB_ID]):
