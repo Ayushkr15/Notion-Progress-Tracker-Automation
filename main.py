@@ -1,7 +1,8 @@
 import os
 import sys
+import requests
+import json
 from datetime import datetime, timedelta, timezone
-from notion_client import Client
 from dotenv import load_dotenv
 
 # Load environment variables from a .env file for local development
@@ -21,7 +22,6 @@ WEEKLY_DB_TITLE_PROP = "Week Number"
 MONTHLY_DB_TITLE_PROP = "Month"
 
 # --- Secrets & Initialization ---
-# These are loaded from your .env file locally or from GitHub Secrets when automated
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 TASKS_DB_ID = os.getenv("TASKS_DB_ID")
 WEEKLY_DB_ID = os.getenv("WEEKLY_DB_ID")
@@ -32,85 +32,121 @@ if not all([NOTION_API_KEY, TASKS_DB_ID, WEEKLY_DB_ID, MONTHLY_DB_ID]):
     print("❌ ERROR: Missing one or more required environment variables.")
     sys.exit(1)
 
-# Initialize the Notion API client
-notion = Client(auth=NOTION_API_KEY)
-
+# --- 🔌 API Setup (The Fix) ---
+# We define standard headers to talk to Notion directly using 'requests'
+HEADERS = {
+    "Authorization": f"Bearer {NOTION_API_KEY}",
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28"
+}
 
 def get_unlinked_tasks():
     """
     Queries for tasks that were recently edited, have a due date, 
-    and are not yet linked to a weekly report.
+    and are not yet linked to a weekly report using requests.
     """
-    # Calculate a timestamp for 65 minutes ago to only fetch recent changes
-    # This buffer prevents missing tasks due to minor timing differences
-    cut_off_time = (datetime.now(timezone.utc) -
-                    timedelta(minutes=65)).isoformat()
+    # Calculate a timestamp for 65 minutes ago
+    cut_off_time = (datetime.now(timezone.utc) - timedelta(minutes=65)).isoformat()
+
+    url = f"https://api.notion.com/v1/databases/{TASKS_DB_ID}/query"
+
+    payload = {
+        "filter": {
+            "and": [
+                {
+                    "property": TASK_PROP_DUE_DATE,
+                    "date": {"is_not_empty": True}
+                },
+                {
+                    "property": TASK_PROP_WEEKLY_LINK,
+                    "relation": {"is_empty": True}
+                },
+                {
+                    "timestamp": "last_edited_time",
+                    "last_edited_time": {"on_or_after": cut_off_time}
+                }
+            ]
+        }
+    }
 
     try:
         print("🔎 Querying for unlinked tasks...")
-        response = notion.databases.query(
-            database_id=TASKS_DB_ID,
-            filter={
-                "and": [
-                    {"property": TASK_PROP_DUE_DATE,
-                        "date": {"is_not_empty": True}},
-                    {"property": TASK_PROP_WEEKLY_LINK,
-                        "relation": {"is_empty": True}},
-                    # This filter makes the automation efficient by only checking recent tasks
-                    {"timestamp": "last_edited_time",
-                        "last_edited_time": {"on_or_after": cut_off_time}}
-                ]
-            }
-        )
-        return response.get("results", [])
+        response = requests.post(url, headers=HEADERS, json=payload)
+        
+        if response.status_code != 200:
+            print(f"❌ Error querying tasks: {response.text}")
+            return []
+            
+        return response.json().get("results", [])
+        
     except Exception as e:
-        print(f"❌ Error querying tasks database: {e}")
+        print(f"❌ Exception during query: {e}")
         return []
 
 
 def find_summary_page(database_id, title_property_name, query_value):
     """Searches a database for a page whose title exactly matches the query."""
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    
+    payload = {
+        "filter": {
+            "property": title_property_name,
+            "title": {"equals": str(query_value)}
+        }
+    }
+
     try:
-        response = notion.databases.query(
-            database_id=database_id,
-            filter={"property": title_property_name,
-                    "title": {"equals": str(query_value)}}
-        )
-        results = response.get("results", [])
+        response = requests.post(url, headers=HEADERS, json=payload)
+        
+        if response.status_code != 200:
+            print(f"⚠️ Error searching summary page: {response.text}")
+            return None
+
+        results = response.json().get("results", [])
+        
         if results:
-            # Return the ID of the first matching page
             return results[0]["id"]
         else:
             print(f"  - No summary page found with title: '{query_value}'")
             return None
+            
     except Exception as e:
-        print(f"❌ Error finding summary page '{query_value}': {e}")
+        print(f"❌ Exception finding summary page '{query_value}': {e}")
         return None
 
 
 def update_task_relations(task_id, weekly_page_id, monthly_page_id):
     """Updates the 'Weekly Link' and 'Monthly Link' relation properties of a task."""
+    url = f"https://api.notion.com/v1/pages/{task_id}"
+    
     properties_to_update = {}
 
     if weekly_page_id:
         properties_to_update[TASK_PROP_WEEKLY_LINK] = {
-            "relation": [{"id": weekly_page_id}]}
+            "relation": [{"id": weekly_page_id}]
+        }
     if monthly_page_id:
         properties_to_update[TASK_PROP_MONTHLY_LINK] = {
-            "relation": [{"id": monthly_page_id}]}
+            "relation": [{"id": monthly_page_id}]
+        }
 
-    # Skip the API call if no summary pages were found to link
     if not properties_to_update:
-        print(
-            f"  - No summary pages found for task {task_id}, skipping update.")
+        print(f"  - No summary pages found for task {task_id}, skipping update.")
         return
+
+    payload = {"properties": properties_to_update}
 
     try:
         print(f"  - Updating relations for task {task_id}...")
-        notion.pages.update(page_id=task_id, properties=properties_to_update)
-        print(f"  - ✅ Successfully linked task {task_id}.")
+        response = requests.patch(url, headers=HEADERS, json=payload)
+        
+        if response.status_code == 200:
+            print(f"  - ✅ Successfully linked task {task_id}.")
+        else:
+            print(f"❌ Failed to update task {task_id}: {response.text}")
+            
     except Exception as e:
-        print(f"❌ Error updating task {task_id}: {e}")
+        print(f"❌ Exception updating task {task_id}: {e}")
 
 
 def main():
@@ -129,14 +165,25 @@ def main():
 
         try:
             # Extract the required values from the task's properties
-            task_title = properties[TASK_PROP_TITLE]["title"][0]["plain_text"]
-            week_number = properties[TASK_PROP_WEEK_NUMBER]["formula"]["string"]
-            month_name = properties[TASK_PROP_MONTH_TEXT]["formula"]["string"]
+            # Note: The structure matches your original code for Formula properties
+            
+            # Handle Title
+            if properties[TASK_PROP_TITLE]["title"]:
+                task_title = properties[TASK_PROP_TITLE]["title"][0]["plain_text"]
+            else:
+                task_title = "Untitled Task"
 
-        except (KeyError, IndexError, TypeError):
-            # Skip any tasks that are missing the required formula properties
-            print(
-                f"⏩ Skipping task {task_id} due to missing or incorrect properties.")
+            # Handle Formulas (Safe extraction)
+            week_number = properties[TASK_PROP_WEEK_NUMBER]["formula"].get("string")
+            month_name = properties[TASK_PROP_MONTH_TEXT]["formula"].get("string")
+            
+            # If formula returned None (not calculated yet), skip
+            if not week_number or not month_name:
+                print(f"⏩ Skipping task {task_id} - Formulas not ready or empty.")
+                continue
+
+        except (KeyError, IndexError, TypeError) as e:
+            print(f"⏩ Skipping task {task_id} due to property error: {e}")
             continue
 
         print(f"\nProcessing task: '{task_title}' (ID: {task_id})")
@@ -153,6 +200,5 @@ def main():
         update_task_relations(task_id, weekly_page_id, monthly_page_id)
 
 
-# Standard entry point for a Python script
 if __name__ == "__main__":
     main()
