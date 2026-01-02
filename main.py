@@ -14,12 +14,17 @@ TASK_PROP_DUE_DATE = "Due Date"
 TASK_PROP_TITLE = "Tasks"
 TASK_PROP_WEEKLY_LINK = "Weekly Link"
 TASK_PROP_MONTHLY_LINK = "Monthly Link"
-TASK_PROP_WEEK_NUMBER = "Week Number"
-TASK_PROP_MONTH_TEXT = "Month"
+TASK_PROP_WEEK_NUMBER = "Week Number"  # Text: "41"
+TASK_PROP_MONTH = "Month"  # Text: "October"
+TASK_PROP_YEAR = "Year"  # Number: 2025
 
 # Title property names in your "Weekly Progress" and "Monthly Progress" databases
-WEEKLY_DB_TITLE_PROP = "Week Number"
-MONTHLY_DB_TITLE_PROP = "Month"
+WEEKLY_DB_TITLE_PROP = "Week Number"  # Text property: "1", "2", etc.
+MONTHLY_DB_TITLE_PROP = "Month"  # Text property: "January", "February", etc.
+
+# NEW: Year property names in Weekly/Monthly Progress databases
+WEEKLY_DB_YEAR_PROP = "Year"  # Number property you'll add
+MONTHLY_DB_YEAR_PROP = "Year"  # Number property you'll add
 
 # --- Secrets & Initialization ---
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
@@ -32,8 +37,7 @@ if not all([NOTION_API_KEY, TASKS_DB_ID, WEEKLY_DB_ID, MONTHLY_DB_ID]):
     print("❌ ERROR: Missing one or more required environment variables.")
     sys.exit(1)
 
-# --- 🔌 API Setup (The Fix) ---
-# We define standard headers to talk to Notion directly using 'requests'
+# --- 📌 API Setup ---
 HEADERS = {
     "Authorization": f"Bearer {NOTION_API_KEY}",
     "Content-Type": "application/json",
@@ -43,7 +47,7 @@ HEADERS = {
 def get_unlinked_tasks():
     """
     Queries for tasks that were recently edited, have a due date, 
-    and are not yet linked to a weekly report using requests.
+    and are not yet linked to a weekly report.
     """
     # Calculate a timestamp for 65 minutes ago
     cut_off_time = (datetime.now(timezone.utc) - timedelta(minutes=65)).isoformat()
@@ -84,14 +88,67 @@ def get_unlinked_tasks():
         return []
 
 
-def find_summary_page(database_id, title_property_name, query_value):
-    """Searches a database for a page whose title exactly matches the query."""
-    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+def extract_task_properties(task_properties):
+    """
+    Extracts year, week number (text), and month (text) from task properties.
+    Returns: (year, week_text, month_text) tuple or (None, None, None) if error
+    """
+    try:
+        # Extract year - should be a number formula
+        year_prop = task_properties.get(TASK_PROP_YEAR, {}).get("formula", {})
+        if year_prop.get("type") == "number":
+            year = int(year_prop.get("number", 0))
+        else:
+            print(f"  ⚠️ Year property not found or not a number formula")
+            return None, None, None
+
+        # Extract week number - should be a text/string formula like "41"
+        week_prop = task_properties.get(TASK_PROP_WEEK_NUMBER, {}).get("formula", {})
+        week_text = week_prop.get("string")
+        if not week_text:
+            print(f"  ⚠️ Week Number property not found or empty")
+            return None, None, None
+
+        # Extract month - should be a text/string formula like "October"
+        month_prop = task_properties.get(TASK_PROP_MONTH, {}).get("formula", {})
+        month_text = month_prop.get("string")
+        if not month_text:
+            print(f"  ⚠️ Month property not found or empty")
+            return None, None, None
+
+        return year, week_text, month_text
+
+    except Exception as e:
+        print(f"  ⚠️ Error extracting task properties: {e}")
+        return None, None, None
+
+
+def find_weekly_page_with_year(week_text, year):
+    """
+    Searches for a Weekly Progress page matching BOTH week number (as text) AND year.
     
+    Args:
+        week_text: The week number as text (e.g., "1", "41")
+        year: The year as number (e.g., 2025, 2026)
+    
+    Returns:
+        Page ID if found, None otherwise
+    """
+    url = f"https://api.notion.com/v1/databases/{WEEKLY_DB_ID}/query"
+    
+    # Build filter to match BOTH title (text) AND year (number)
     payload = {
         "filter": {
-            "property": title_property_name,
-            "title": {"equals": str(query_value)}
+            "and": [
+                {
+                    "property": WEEKLY_DB_TITLE_PROP,
+                    "title": {"equals": week_text}
+                },
+                {
+                    "property": WEEKLY_DB_YEAR_PROP,
+                    "number": {"equals": year}
+                }
+            ]
         }
     }
 
@@ -99,24 +156,79 @@ def find_summary_page(database_id, title_property_name, query_value):
         response = requests.post(url, headers=HEADERS, json=payload)
         
         if response.status_code != 200:
-            print(f"⚠️ Error searching summary page: {response.text}")
+            print(f"⚠️ Error searching weekly page: {response.text}")
             return None
 
         results = response.json().get("results", [])
         
         if results:
-            return results[0]["id"]
+            page_id = results[0]["id"]
+            print(f"  ✅ Found weekly page: Week {week_text} (Year: {year})")
+            return page_id
         else:
-            print(f"  - No summary page found with title: '{query_value}'")
+            print(f"  ⚠️ No weekly page found with Week Number='{week_text}' and Year={year}")
             return None
             
     except Exception as e:
-        print(f"❌ Exception finding summary page '{query_value}': {e}")
+        print(f"❌ Exception finding weekly page: {e}")
+        return None
+
+
+def find_monthly_page_with_year(month_text, year):
+    """
+    Searches for a Monthly Progress page matching BOTH month name (as text) AND year.
+    
+    Args:
+        month_text: The month name as text (e.g., "January", "October")
+        year: The year as number (e.g., 2025, 2026)
+    
+    Returns:
+        Page ID if found, None otherwise
+    """
+    url = f"https://api.notion.com/v1/databases/{MONTHLY_DB_ID}/query"
+    
+    # Build filter to match BOTH title (text) AND year (number)
+    payload = {
+        "filter": {
+            "and": [
+                {
+                    "property": MONTHLY_DB_TITLE_PROP,
+                    "title": {"equals": month_text}
+                },
+                {
+                    "property": MONTHLY_DB_YEAR_PROP,
+                    "number": {"equals": year}
+                }
+            ]
+        }
+    }
+
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+        
+        if response.status_code != 200:
+            print(f"⚠️ Error searching monthly page: {response.text}")
+            return None
+
+        results = response.json().get("results", [])
+        
+        if results:
+            page_id = results[0]["id"]
+            print(f"  ✅ Found monthly page: {month_text} (Year: {year})")
+            return page_id
+        else:
+            print(f"  ⚠️ No monthly page found with Month='{month_text}' and Year={year}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Exception finding monthly page: {e}")
         return None
 
 
 def update_task_relations(task_id, weekly_page_id, monthly_page_id):
-    """Updates the 'Weekly Link' and 'Monthly Link' relation properties of a task."""
+    """
+    Updates the 'Weekly Link' and 'Monthly Link' relation properties of a task.
+    """
     url = f"https://api.notion.com/v1/pages/{task_id}"
     
     properties_to_update = {}
@@ -150,7 +262,9 @@ def update_task_relations(task_id, weekly_page_id, monthly_page_id):
 
 
 def main():
-    """Main execution function to orchestrate the automation."""
+    """
+    Main execution function to orchestrate the automation.
+    """
     tasks_to_process = get_unlinked_tasks()
 
     if not tasks_to_process:
@@ -158,45 +272,40 @@ def main():
         return
 
     print(f"Found {len(tasks_to_process)} task(s) to process.")
+    print("🗓️  Using Year + Text matching (Week/Month stay as text!)\n")
 
     for task in tasks_to_process:
         task_id = task.get("id")
         properties = task.get("properties", {})
 
         try:
-            # Extract the required values from the task's properties
-            # Note: The structure matches your original code for Formula properties
-            
             # Handle Title
-            if properties[TASK_PROP_TITLE]["title"]:
+            if properties.get(TASK_PROP_TITLE, {}).get("title"):
                 task_title = properties[TASK_PROP_TITLE]["title"][0]["plain_text"]
             else:
                 task_title = "Untitled Task"
 
-            # Handle Formulas (Safe extraction)
-            week_number = properties[TASK_PROP_WEEK_NUMBER]["formula"].get("string")
-            month_name = properties[TASK_PROP_MONTH_TEXT]["formula"].get("string")
+            # Extract year (number), week (text), and month (text)
+            year, week_text, month_text = extract_task_properties(properties)
             
-            # If formula returned None (not calculated yet), skip
-            if not week_number or not month_name:
-                print(f"⏩ Skipping task {task_id} - Formulas not ready or empty.")
+            if not all([year, week_text, month_text]):
+                print(f"⏩ Skipping task '{task_title}' ({task_id}) - Missing required properties")
                 continue
 
         except (KeyError, IndexError, TypeError) as e:
             print(f"⏩ Skipping task {task_id} due to property error: {e}")
             continue
 
-        print(f"\nProcessing task: '{task_title}' (ID: {task_id})")
+        print(f"\n📋 Processing task: '{task_title}' (ID: {task_id})")
+        print(f"  📅 Year: {year}, Week: '{week_text}', Month: '{month_text}'")
 
-        # Find the ID of the corresponding weekly summary page
-        weekly_page_id = find_summary_page(
-            WEEKLY_DB_ID, WEEKLY_DB_TITLE_PROP, week_number)
+        # Find the corresponding weekly summary page (matching BOTH week text AND year)
+        weekly_page_id = find_weekly_page_with_year(week_text, year)
 
-        # Find the ID of the corresponding monthly summary page
-        monthly_page_id = find_summary_page(
-            MONTHLY_DB_ID, MONTHLY_DB_TITLE_PROP, month_name)
+        # Find the corresponding monthly summary page (matching BOTH month text AND year)
+        monthly_page_id = find_monthly_page_with_year(month_text, year)
 
-        # Update the original task with the new relations
+        # Update the task with the new relations
         update_task_relations(task_id, weekly_page_id, monthly_page_id)
 
 
